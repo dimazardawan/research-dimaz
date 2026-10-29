@@ -1,0 +1,111 @@
+
+
+networks:
+  selfhealing-net:
+    driver: bridge
+
+services:
+
+  # ── Apache Kafka (KRaft Mode, tanpa ZooKeeper) ──
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: kafka-broker
+    networks:
+      - selfhealing-net
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh",
+             "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── n8n Workflow Engine ──
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n-engine
+    networks:
+      - selfhealing-net
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_LOG_LEVEL=info
+      - N8N_EXECUTIONS_PROCESS=main
+      - N8N_SECURE_COOKIE=false
+      - WEBHOOK_URL=http://localhost:5678/
+      - N8N_RUNNERS_ENABLED=false
+      - NODE_FUNCTION_ALLOW_BUILTIN=*
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - kafka
+
+  # ── REST API Service A (Primary) ──
+  service-a:
+    build: ./services/service-a
+    container_name: rest-api-service-a
+    networks:
+      - selfhealing-net
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - SERVICE_NAME=service-a
+
+  # ── REST API Service B (Fallback) ──
+  service-b:
+    build: ./services/service-b
+    container_name: rest-api-service-b
+    networks:
+      - selfhealing-net
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - SERVICE_NAME=service-b
+    restart: on-failure   
+
+  service-c:
+    build: ./services/service-c
+    container_name: rest-api-service-c
+    networks:
+      - selfhealing-net
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - SERVICE_NAME=service-c
+    restart: on-failure   
+
+  pumba:
+    image: gaiaadm/pumba:latest
+    container_name: pumba-chaos
+    profiles:
+      - chaos
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    network_mode: "host"
+    entrypoint: ["pumba"]
+    command: ["--help"]
+
+volumes:
+  kafka_data:
+  n8n_data:
